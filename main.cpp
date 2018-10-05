@@ -1,7 +1,13 @@
 #include <iostream>
 #include <getopt.h>
+#include <pcap.h>
 
 using namespace std;
+
+void got_packet(u_char *args, const struct pcap_pkthdr *header, const u_char *packet)
+{
+    cout << (int)packet[0] << "." << (int)packet[1] << "." << (int)packet[2] << "." << (int)packet[3] << endl;
+}
 
 int main(int argc, char *argv[])
 {
@@ -53,8 +59,29 @@ int main(int argc, char *argv[])
              << "    t (seconds) - volitelny parametr, doba vypoctu statistik v sekundach, (vychozi hodnota 60 sekund)"
              << endl;
         return 0;
-    } else if (hFlag)
-        return 2;
+    }
 
-    cout << "Got here!" << endl;
+    pcap_t *handle;
+    char errbuf[PCAP_ERRBUF_SIZE];
+    struct bpf_program filterExp;
+    bpf_u_int32 net;
+
+    handle = pcap_open_live(interfaceName.c_str(), BUFSIZ, 1, 1000, errbuf);
+
+    if (handle == NULL) {
+        fprintf(stderr, "Couldn't open device %s: %s\n", interfaceName.c_str(), errbuf);
+        return 2;
+    }
+
+    if (pcap_compile(handle, &filterExp, "port 53", 0, net) == -1) {
+        fprintf(stderr, "Couldn't parse filter: %s\n", pcap_geterr(handle));
+        return 2;
+    }
+
+    if (pcap_setfilter(handle, &filterExp) == -1) {
+        fprintf(stderr, "Couldn't install filter: %s\n", pcap_geterr(handle));
+        return 2;
+    }
+
+    pcap_loop(handle, -1, got_packet, nullptr);
 }
