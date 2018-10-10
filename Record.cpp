@@ -38,7 +38,8 @@ Record::Record(unsigned char buffer[512], uint16_t * buffer_offset)
     }
 
     // Ve vsech ostatnich pripadech jsou data odpovedi domenove jmeno
-    else if(type_ == QuestionType::QTYPE_NS || type_ == QuestionType ::QTYPE_TXT || type_ == QuestionType::QTYPE_CNAME)
+    else if (type_ == QuestionType::QTYPE_NS || type_ == QuestionType ::QTYPE_TXT ||
+    type_ == QuestionType::QTYPE_CNAME || type_ == QuestionType::QTYPE_SOA)
         this->ParseName(&rdata_, buffer, buffer_offset, data_len);
     else
         throw std::runtime_error("Byl prijat programem nezpracovatelny typ odpovedi");
