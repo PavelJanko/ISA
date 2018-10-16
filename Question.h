@@ -15,7 +15,9 @@ enum QuestionType
     QTYPE_SOA = 6,
     QTYPE_MX = 15,
     QTYPE_TXT = 16,
-    QTYPE_AAAA = 28
+    QTYPE_AAAA = 28,
+    QTYPE_RRSIG = 46,
+    QTYPE_NSEC = 47
 };
 
 // Struktura pro ulozeni typu a tridy otazky do dotazu
