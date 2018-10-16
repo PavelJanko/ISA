@@ -1,6 +1,6 @@
 #include "Record.h"
 
-Record::Record(unsigned char buffer[512], uint16_t *buffer_offset) {
+Record::Record(unsigned char buffer[1024], uint16_t *buffer_offset) {
     type_ = 0;
 
     // Offsety se nastavuji podle RFC 1035
@@ -30,7 +30,7 @@ Record::Record(unsigned char buffer[512], uint16_t *buffer_offset) {
             throw std::runtime_error("Byla prijata IPv4 adresa o delce ruzne od 4");
     }
 
-    // Pokud byl dotaz typu AAAA, tak jsou data odpovedi IPv6 adresa
+        // Pokud byl dotaz typu AAAA, tak jsou data odpovedi IPv6 adresa
     else if (type_ == QuestionType::QTYPE_AAAA) {
         if (data_len == 16)
             this->ParseIPv6(buffer, buffer_offset);
@@ -38,32 +38,79 @@ Record::Record(unsigned char buffer[512], uint16_t *buffer_offset) {
             throw std::runtime_error("Byla prijata IPv6 adresa o delce ruzne od 16");
     }
 
-    // Ve vsech ostatnich pripadech jsou data odpovedi domenove jmeno
+        // Ve vsech ostatnich pripadech jsou data odpovedi domenove jmeno
     else if (type_ == QuestionType::QTYPE_NS || type_ == QuestionType::QTYPE_TXT ||
-             type_ == QuestionType::QTYPE_CNAME || type_ == QuestionType::QTYPE_SOA ||
+             type_ == QuestionType::QTYPE_CNAME ||
              type_ == QuestionType::QTYPE_NSEC)
         this->ParseName(&rdata_, buffer, buffer_offset, data_len);
-    else if (type_ == QuestionType::QTYPE_RRSIG) {
-        *buffer_offset += 18;
-        int sigNameLength = *buffer_offset;
+
+    else if (type_ == QuestionType::QTYPE_SOA) {
+        uint32_t rr_helper = *buffer_offset;
+        uint16_t prim_ns_length = *buffer_offset;
 
         this->ParseName(&rdata_, buffer, buffer_offset, data_len);
+        rdata_.append(" ");
+        *buffer_offset += 2;
 
-        sigNameLength = *buffer_offset - sigNameLength;
-        rdata_.clear();
+        prim_ns_length = *buffer_offset - prim_ns_length;
+
+        this->ParseName(&rdata_, buffer, buffer_offset, data_len);
+        rdata_.append(" ");
+        *buffer_offset = rr_helper + prim_ns_length + (data_len - prim_ns_length - 20);
+
+        rr_helper = 0;
+
+        for (uint8_t i = 0; i < 5; i++)
+            this->AppendOctet(&rr_helper, 4, buffer, buffer_offset);
+
+        rdata_.insert(0, "\"");
+        rdata_.insert(rdata_.length() - 1, "\"");
+    } else if (type_ == QuestionType::QTYPE_DS) {
+        uint32_t rr_helper = 0;
+
+        this->AppendOctet(&rr_helper, 2, buffer, buffer_offset);
+        this->AppendOctet(&rr_helper, 1, buffer, buffer_offset);
+        this->AppendOctet(&rr_helper, 1, buffer, buffer_offset);
+
+        this->ParseHexKey(4, data_len - 1, buffer, buffer_offset);
+
+        rdata_.insert(0, "\"");
+        rdata_.append("\"");
+    } else if (type_ == QuestionType::QTYPE_RRSIG) {
+        uint32_t rr_helper = 0;
+
+        this->AppendOctet(&rr_helper, 2, buffer, buffer_offset);
+        this->AppendOctet(&rr_helper, 1, buffer, buffer_offset);
+        this->AppendOctet(&rr_helper, 1, buffer, buffer_offset);
+        this->AppendOctet(&rr_helper, 4, buffer, buffer_offset);
+        this->AppendOctet(&rr_helper, 4, buffer, buffer_offset);
+        this->AppendOctet(&rr_helper, 4, buffer, buffer_offset);
+        this->AppendOctet(&rr_helper, 2, buffer, buffer_offset);
+
+        int sig_name_len = *buffer_offset;
+        this->ParseName(&rdata_, buffer, buffer_offset, data_len);
+
+        sig_name_len = *buffer_offset - sig_name_len;
+        rdata_.append(" ");
         *buffer_offset -= 1;
 
-        while (18 + sigNameLength <= data_len) {
-            data_len--;
+        this->ParseHexKey(18 + sig_name_len, data_len, buffer, buffer_offset);
 
-            std::stringstream int_to_hex;
-            int_to_hex << std::setfill('0') << std::setw(2) << std::hex << (int)buffer[*buffer_offset];
-            rdata_.append(int_to_hex.str());
-            *buffer_offset += 1;
-        }
-    }
-    else
-        throw std::runtime_error("Byl prijat programem nezpracovatelny typ odpovedi");
+        rdata_.insert(0, "\"");
+        rdata_.append("\"");
+    } else if (type_ == QTYPE_DNSKEY) {
+        uint32_t rr_helper = 0;
+
+        this->AppendOctet(&rr_helper, 2, buffer, buffer_offset);
+        this->AppendOctet(&rr_helper, 1, buffer, buffer_offset);
+        this->AppendOctet(&rr_helper, 1, buffer, buffer_offset);
+
+        this->ParseHexKey(4, data_len - 1, buffer, buffer_offset);
+
+        rdata_.insert(0, "\"");
+        rdata_.append("\"");
+    } else
+        throw std::domain_error("Byl prijat programem nezpracovatelny typ odpovedi");
 }
 
 std::string Record::GetName() {
@@ -85,16 +132,20 @@ std::string Record::GetType() {
         return "TXT";
     else if (type_ == QTYPE_AAAA)
         return "AAAA";
+    else if (type_ == QTYPE_DS)
+        return "DS";
     else if (type_ == QTYPE_RRSIG)
         return "RRSIG";
-    return "NSEC";
+    else if (type_ == QTYPE_NSEC)
+        return "NSEC";
+    return "DNSKEY";
 }
 
 std::string Record::GetData() {
     return rdata_;
 }
 
-void Record::ParseIPv4(unsigned char buffer[512], uint16_t *buffer_offset) {
+void Record::ParseIPv4(unsigned char buffer[1024], uint16_t *buffer_offset) {
     for (int i = 0; i < 4; i++) {
         rdata_.append(std::to_string(buffer[*buffer_offset]));
         if (i != 3)
@@ -103,7 +154,7 @@ void Record::ParseIPv4(unsigned char buffer[512], uint16_t *buffer_offset) {
     }
 }
 
-void Record::ParseIPv6(unsigned char buffer[512], uint16_t *buffer_offset) {
+void Record::ParseIPv6(unsigned char buffer[1024], uint16_t *buffer_offset) {
     uint16_t ipv6_helper = 0;
 
     // Pro prevod z IPv6 do textove podoby je zapotrebi jednotlive dvojice oktetu prevadet z hexadecimalni podoby na retezec
@@ -124,7 +175,7 @@ void Record::ParseIPv6(unsigned char buffer[512], uint16_t *buffer_offset) {
 }
 
 void
-Record::ParseName(std::string *data_holder, unsigned char buffer[512], uint16_t *buffer_offset, uint16_t data_len) {
+Record::ParseName(std::string *data_holder, unsigned char buffer[1024], uint16_t *buffer_offset, uint16_t data_len) {
     uint16_t pointer_helper = 0;
 
     // Zjisteni pozice, na ktere se ma zacit odpoved cist
@@ -136,10 +187,10 @@ Record::ParseName(std::string *data_holder, unsigned char buffer[512], uint16_t 
     } else if ((buffer[*buffer_offset] & 192) == 0) {
         pointer_helper = *buffer_offset;
 
-        if (this->type_ != QTYPE_RRSIG)
+        if (this->type_ != QTYPE_SOA && this->type_ != QTYPE_RRSIG)
             *buffer_offset += data_len;
     } else
-        throw std::runtime_error("Error");
+        throw std::domain_error("Spatne zpracovana odpoved");
 
     uint8_t length = 0;
     int j = 0;
@@ -156,7 +207,7 @@ Record::ParseName(std::string *data_holder, unsigned char buffer[512], uint16_t 
             length = buffer[pointer_helper] + 1;
             pointer_helper++;
 
-            if (this->type_ == QTYPE_RRSIG)
+            if (this->type_ == QTYPE_SOA || this->type_ == QTYPE_RRSIG)
                 *buffer_offset += 1;
         } else if (length == i) {
             data_holder->append(1, '.');
@@ -166,8 +217,34 @@ Record::ParseName(std::string *data_holder, unsigned char buffer[512], uint16_t 
             data_holder->append(1, buffer[pointer_helper]);
             pointer_helper++;
 
-            if (this->type_ == QTYPE_RRSIG)
+            if (this->type_ == QTYPE_SOA || this->type_ == QTYPE_RRSIG)
                 *buffer_offset += 1;
-        } j++;
+        }
+        j++;
     }
+}
+
+void Record::ParseHexKey(uint16_t loop_from, uint16_t data_len, unsigned char buffer[1024], uint16_t *buffer_offset) {
+    while (loop_from <= data_len) {
+        data_len--;
+
+        std::stringstream int_to_hex;
+        int_to_hex << std::setfill('0') << std::setw(2) << std::hex << (int) buffer[*buffer_offset];
+        rdata_.append(int_to_hex.str());
+        *buffer_offset += 1;
+    }
+}
+
+void Record::AppendOctet(uint32_t *rr_helper, uint8_t octet_size, unsigned char buffer[1024], uint16_t *buffer_offset) {
+    *rr_helper = 0;
+    memcpy(rr_helper, buffer + *buffer_offset, octet_size);
+
+    if (octet_size == 2)
+        *rr_helper = htons((uint16_t) *rr_helper);
+    else if (octet_size == 4)
+        *rr_helper = htonl(*rr_helper);
+
+    rdata_.append(std::to_string(*rr_helper));
+    rdata_.append(" ");
+    *buffer_offset += octet_size;
 }

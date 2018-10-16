@@ -16,12 +16,14 @@ class Record {
         uint32_t ttl_;
         std::string rdata_;
 
-        void ParseIPv4(unsigned char buffer[512], uint16_t * buffer_offset);
-        void ParseIPv6(unsigned char buffer[512], uint16_t * buffer_offset);
-        void ParseName(std::string * data_holder, unsigned char buffer[512], uint16_t * buffer_offset, uint16_t data_len);
+        void ParseIPv4(unsigned char buffer[1024], uint16_t * buffer_offset);
+        void ParseIPv6(unsigned char buffer[1024], uint16_t * buffer_offset);
+        void ParseName(std::string * data_holder, unsigned char buffer[1024], uint16_t * buffer_offset, uint16_t data_len);
+        void ParseHexKey(uint16_t loop_from, uint16_t data_len, unsigned char buffer[1024], uint16_t *buffer_offset);
+        void AppendOctet(uint32_t * rr_helper, uint8_t octet_size, unsigned char buffer[1024], uint16_t * buffer_offset);
 
     public:
-        Record(unsigned char buffer[512], uint16_t * buffer_offset);
+        Record(unsigned char buffer[1024], uint16_t * buffer_offset);
         std::string GetData();
         std::string GetName();
         std::string GetType();

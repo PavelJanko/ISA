@@ -22,7 +22,7 @@ class Query {
         sockaddr_in dns_server_address_;
         std::string hostname_or_ip_;
         int32_t query_socket_;
-        unsigned char buffer[512];
+        unsigned char buffer[1024];
         uint16_t buffer_offset_ = 0;
 
         void ParseIPv4();

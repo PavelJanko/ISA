@@ -37,7 +37,7 @@ int Header::GetResponseCode() {
     return rcode;
 }
 
-void Header::SetFlags(unsigned char buffer[512]) {
+void Header::SetFlags(unsigned char buffer[1024]) {
     uint16_t formatting_helper = 0;
     memcpy(&formatting_helper, buffer + 2, sizeof(formatting_helper));
     formatting_helper = ntohs(formatting_helper);

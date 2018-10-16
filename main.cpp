@@ -3,7 +3,6 @@
 #include <pcap.h>
 #include <chrono>
 #include <future>
-#include <zconf.h>
 #include "Query.h"
 
 #define PROTOCOL_NUMBER_OFFSET 9
@@ -13,11 +12,6 @@
 #define UDP_HEADER_SIZE 8
 
 using namespace std;
-
-int sleepInSeconds(int seconds)
-{
-    usleep(seconds * 1000000);
-}
 
 void print_help(bool arg_error = false)
 {
@@ -76,7 +70,7 @@ void packetReceived(u_char *interface_name, const struct pcap_pkthdr *header, co
         cerr << "ERROR (RUNTIME): " << e.what() << endl;
     } catch (const invalid_argument &e) {
         cerr << "ERROR (ARGUMENT): " << e.what() << endl;
-    }
+    } catch (const domain_error &e) {}
 }
 
 int main(int argc, char *argv[]) {

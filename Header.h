@@ -32,7 +32,7 @@ struct Header {
         int GetAuthNSCount();
 
         // Funkce slouzi pro korektni nastaveni vlajek po prijeti zpravy
-        void SetFlags(unsigned char buffer[512]);
+        void SetFlags(unsigned char buffer[1024]);
 };
 
 #endif
