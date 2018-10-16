@@ -21,7 +21,7 @@ Query::Query(const u_char * packet_received)
 
     if (header_.GetType() == 1) {
         if (header_.GetResponseCode() != 0)
-            throw runtime_error("Prijata zprava oznamuje chybovy stav");
+            throw domain_error("Prijata zprava oznamuje chybovy stav");
 
         // V pripade, ze byla prijata odpoved, tak nas zbytek zpravy nezajima (stejne by se zahazoval)
         if (header_.GetAnswerCount() != 0) {
