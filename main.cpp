@@ -3,6 +3,7 @@
 #include <pcap.h>
 #include <chrono>
 #include <syslog.h>
+#include <unistd.h>
 #include "Query.h"
 
 #define PROTOCOL_NUMBER_OFFSET 9
@@ -14,6 +15,10 @@
 using namespace std;
 
 vector<string> responses_;
+
+string cutout_response(string response) {
+    return response.substr(response.find("- - - "), response.find_last_of(' ') - response.find("- - - "));
+}
 
 void print_help(bool arg_error = false) {
     cout << "Pouziti: ./dns-export [-h]" << endl
@@ -34,26 +39,26 @@ void print_help(bool arg_error = false) {
     exit(0);
 }
 
-void packetReceived(u_char *interface_name, const struct pcap_pkthdr *header, const u_char *buffer) {
+void PacketReceived(u_char * interface_name, const struct pcap_pkthdr * packet_header, const u_char * packet_buffer) {
     int mac_header_size = 14;
 
     if (!strcmp((char *) interface_name, "any"))
         mac_header_size = 16;
 
-    int ipHeaderLength = (buffer[mac_header_size] & 0x0f) * 4;
-    int protocolNumber = buffer[mac_header_size + PROTOCOL_NUMBER_OFFSET];
+    int ipHeaderLength = (packet_buffer[mac_header_size] & 0x0f) * 4;
+    int protocolNumber = packet_buffer[mac_header_size + PROTOCOL_NUMBER_OFFSET];
     int dnsOffset = 0;
 
     if (protocolNumber == UDP_PROTOCOL_NUMBER) {
         dnsOffset = mac_header_size + ipHeaderLength + UDP_HEADER_SIZE;
     } else {
-        int tcpHeaderLength = ((buffer[mac_header_size + ipHeaderLength + TCP_HEADER_SIZE_OFFSET] & 0xf0) >> 4) * 4;
-        cout << ipHeaderLength << "..." << tcpHeaderLength << endl;
+        int tcpHeaderLength =
+                ((packet_buffer[mac_header_size + ipHeaderLength + TCP_HEADER_SIZE_OFFSET] & 0xf0) >> 4) * 4;
         dnsOffset = mac_header_size + ipHeaderLength + tcpHeaderLength;
     }
 
     try {
-        Query query(&buffer[dnsOffset]);
+        Query query(&packet_buffer[dnsOffset]);
 
         if (query.GetAnswerCount() != 0) {
             // Zpracovani odpovedi
@@ -65,8 +70,10 @@ void packetReceived(u_char *interface_name, const struct pcap_pkthdr *header, co
                 auto timer = chrono::system_clock::to_time_t(time_now);
 
                 stringstream response;
-                response << "<134>1 " << put_time(std::localtime(&timer), "%FT%T.") << std::setfill('0') << std::setw(3)
-                         << time_now_ms.count() << "Z dns-export - - - " << output.GetName() << " " << output.GetType()
+                response << "<134>1 " << put_time(std::localtime(&timer), "%FT%T.") << std::setfill('0')
+                         << std::setw(3)
+                         << time_now_ms.count() << "Z dns-export - - - " << output.GetName() << " "
+                         << output.GetType()
                          << " " << output.GetData() << " 1" << endl;
 
                 if (responses_.empty())
@@ -75,13 +82,12 @@ void packetReceived(u_char *interface_name, const struct pcap_pkthdr *header, co
                     bool found_match = false;
 
                     for (auto &prev_response : responses_) {
-                        if (prev_response.substr(prev_response.find("- - - "), prev_response.find_last_of(' ')) ==
-                            response.str().substr(response.str().find("- - - "), response.str().find_last_of(' '))) {
+                        if (cutout_response(prev_response) == cutout_response(response.str())) {
                             uint8_t prev_count = (uint8_t) stoi(
                                     prev_response.substr(prev_response.find_last_of(' ') + 1, prev_response.length())
                             );
                             prev_response = prev_response.substr(0, prev_response.find_last_of(' ') + 1);
-                            prev_response.append(to_string(++prev_count));
+                            prev_response.append(to_string(++prev_count) + "\n");
 
                             found_match = true;
                             break;
@@ -102,9 +108,9 @@ void packetReceived(u_char *interface_name, const struct pcap_pkthdr *header, co
 
 int main(int argc, char *argv[]) {
     int c = 0;
-    int calc_time = 60;
     bool h_flag = false, c_flag = false;
     string pcap_file_name, interface_name, syslog_address;
+    chrono::time_point<chrono::system_clock> calc_time = chrono::system_clock::now() + chrono::seconds(5);
 
     // Zpracovani argumentu
     while (optind < argc && !h_flag) {
@@ -122,11 +128,10 @@ int main(int argc, char *argv[]) {
                 case 't':
                     try {
                         c_flag = true;
-                        calc_time = stoi(optarg);
+                        calc_time = chrono::system_clock::now() + chrono::seconds(stoi(optarg));
                     } catch (...) {
                         print_help(true);
-                    }
-                    break;
+                    } break;
                 case 'h':
                     h_flag = true;
                     break;
@@ -143,14 +148,14 @@ int main(int argc, char *argv[]) {
     if ((!pcap_file_name.empty() && !interface_name.empty()) || (!pcap_file_name.empty() && c_flag))
         print_help(true);
 
-        // Vypis pomoci k programu
+    // Vypis pomoci k programu
     else if (h_flag)
         print_help();
 
-    pcap_t *handle;
     char error_buffer[PCAP_ERRBUF_SIZE];
     struct bpf_program filter_exp;
     bpf_u_int32 ip_address;
+    pcap_t * handle;
 
     if (interface_name.empty())
         handle = pcap_open_offline(pcap_file_name.c_str(), error_buffer);
@@ -171,8 +176,13 @@ int main(int argc, char *argv[]) {
         return 2;
     }
 
-//    future<int> timer = async (sleepInSeconds, calc_time);
-    pcap_loop(handle, -1, packetReceived, (u_char *) interface_name.c_str());
+    pcap_setnonblock(handle, 1, error_buffer);
+
+    while (chrono::system_clock::now() < calc_time)
+        pcap_dispatch(handle, -1, PacketReceived, (u_char *) interface_name.c_str());
+
+    for (auto &response : responses_)
+        cout << response.c_str();
 
     return 0;
 }
