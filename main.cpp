@@ -4,6 +4,8 @@
 #include <chrono>
 #include <syslog.h>
 #include <unistd.h>
+#include <netdb.h>
+#include <csignal>
 #include "Query.h"
 
 #define PROTOCOL_NUMBER_OFFSET 9
@@ -22,6 +24,11 @@ string CutOutResponse(string response) {
     return response.substr(response.find("- - - "), response.find_last_of(' ') - response.find("- - - "));
 }
 
+void SignalCallback(int sig_number) {
+    for (auto &response : responses_)
+        cout << response;
+}
+
 void PrintHelp(bool arg_error = false) {
     cout << "Pouziti: ./dns-export [-h]" << endl
          << "         ./dns-export [-r file.pcap] [-i interface] [-s syslog-server] [-t seconds]" << endl
@@ -35,7 +42,7 @@ void PrintHelp(bool arg_error = false) {
 
     if (arg_error) {
         cout << "ERROR (ARGUMENT): Chybny format vstupnich argumentu." << endl;
-        exit(2);
+        exit(1);
     }
 
     exit(0);
@@ -147,12 +154,15 @@ int main(int argc, char *argv[]) {
     }
 
     // Kontrola spravne kombinace vstupnich argumentu
-    if ((!pcap_file_name.empty() && !interface_name.empty()) || (!pcap_file_name.empty() && c_flag))
+    if (!pcap_file_name.empty() && c_flag)
         PrintHelp(true);
 
     // Vypis pomoci k programu
-    else if (h_flag)
+    else if (h_flag || (!pcap_file_name.empty() && !interface_name.empty()))
         PrintHelp();
+
+    else if ((!pcap_file_name.empty() || !interface_name.empty()) && syslog_address.empty())
+        signal(SIGUSR1, SignalCallback);
 
     char error_buffer[PCAP_ERRBUF_SIZE];
     struct bpf_program filter_exp;
@@ -180,11 +190,62 @@ int main(int argc, char *argv[]) {
 
     pcap_setnonblock(handle, 1, error_buffer);
 
-    while (chrono::system_clock::now() < calc_time)
-        pcap_dispatch(handle, -1, PacketReceived, (u_char *) interface_name.c_str());
+    if (interface_name.empty())
+        pcap_loop(handle, -1, PacketReceived, (u_char *) interface_name.c_str());
+    else {
+        while (chrono::system_clock::now() < calc_time)
+            pcap_dispatch(handle, -1, PacketReceived, (u_char *) interface_name.c_str());
+    }
 
-    for (auto &response : responses_)
-        cout << response.c_str();
+    if (syslog_address.empty()) {
+        SignalCallback(0);
+        return 0;
+    }
+
+    int conn_socket = 0;
+
+    try {
+        if ((conn_socket = socket(PF_INET, SOCK_STREAM, 0)) < 0)
+            throw runtime_error("Nepodarilo se vytvorit socket pro komunikaci");
+
+        sockaddr_in server_address_ipv4;
+        bzero(&server_address_ipv4, sizeof(server_address_ipv4));
+        server_address_ipv4.sin_family = AF_INET;
+        server_address_ipv4.sin_port = htons(514);
+        
+        sockaddr_in6 server_address_ipv6;
+        bzero(&server_address_ipv6, sizeof(server_address_ipv6));
+        server_address_ipv6.sin6_family = AF_INET6;
+        server_address_ipv6.sin6_port = htons(514);
+
+        // Prevod adresy z textove na binarni formu
+        if (inet_pton(AF_INET, syslog_address.c_str(), &(server_address_ipv4.sin_addr)) == 1) {
+            if (connect(conn_socket, (struct sockaddr *) &server_address_ipv4, sizeof(server_address_ipv4)) == -1)
+                throw runtime_error("Nepodarilo se pripojit k syslog serveru");
+        } else if (inet_pton(AF_INET6, syslog_address.c_str(), &(server_address_ipv6.sin6_addr)) == 1) {
+            if (connect(conn_socket, (struct sockaddr *) &server_address_ipv6, sizeof(server_address_ipv6)) == -1)
+                throw runtime_error("Nepodarilo se pripojit k syslog serveru");
+        } else {
+            hostent *addressFromHost = gethostbyname(syslog_address.c_str());
+
+            if (addressFromHost != nullptr) {
+                memcpy(&server_address_ipv4.sin_addr, addressFromHost->h_addr_list[0],
+                       (size_t) addressFromHost->h_length);
+                if (connect(conn_socket, (struct sockaddr *) &server_address_ipv4, sizeof(server_address_ipv4)) == -1)
+                    throw runtime_error("Nepodarilo se pripojit k syslog serveru");
+            } else
+                throw invalid_argument("Zadana adresa syslog serveru neni platna");
+        }
+
+        for (auto &response : responses_)
+            write(conn_socket, response.data(), response.size());
+    } catch (runtime_error &e) {
+        cerr << "ERROR (RUNTIME): " << e.what() << endl;
+        return 2;
+    } catch (invalid_argument &e) {
+        cerr << "ERROR (ARGUMENT): " << e.what() << endl;
+        PrintHelp(true);
+    }
 
     return 0;
 }
