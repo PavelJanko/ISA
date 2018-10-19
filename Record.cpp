@@ -30,7 +30,7 @@ Record::Record(unsigned char buffer[1024], uint16_t *buffer_offset) {
             throw std::runtime_error("Byla prijata IPv4 adresa o delce ruzne od 4");
     }
 
-        // Pokud byl dotaz typu AAAA, tak jsou data odpovedi IPv6 adresa
+    // Pokud byl dotaz typu AAAA, tak jsou data odpovedi IPv6 adresa
     else if (type_ == QuestionType::QTYPE_AAAA) {
         if (data_len == 16)
             this->ParseIPv6(buffer, buffer_offset);
@@ -38,28 +38,32 @@ Record::Record(unsigned char buffer[1024], uint16_t *buffer_offset) {
             throw std::runtime_error("Byla prijata IPv6 adresa o delce ruzne od 16");
     }
 
-        // Ve vsech ostatnich pripadech jsou data odpovedi domenove jmeno
+    // V pripade NS, TXT, CNAME a NSEC zaznamu jsou data odpovedi domenove jmeno
     else if (type_ == QuestionType::QTYPE_NS || type_ == QuestionType::QTYPE_TXT ||
              type_ == QuestionType::QTYPE_CNAME ||
              type_ == QuestionType::QTYPE_NSEC)
         this->ParseName(&rdata_, buffer, buffer_offset, data_len);
 
+    // V pripade SOA a DNSSEC (krome NSEC) zaznamu jsou data odpovedi slozene z vice prvku
     else if (type_ == QuestionType::QTYPE_SOA) {
         uint32_t rr_helper = *buffer_offset;
         uint16_t prim_ns_length = *buffer_offset;
 
+        // Zjisteni primarniho NS pro zonu
         this->ParseName(&rdata_, buffer, buffer_offset, data_len);
         rdata_.append(" ");
         *buffer_offset += 2;
 
         prim_ns_length = *buffer_offset - prim_ns_length;
 
+        // Zjisteni e-mail adresy spravce
         this->ParseName(&rdata_, buffer, buffer_offset, data_len);
         rdata_.append(" ");
         *buffer_offset = rr_helper + prim_ns_length + (data_len - prim_ns_length - 20);
 
         rr_helper = 0;
 
+        // Pote nasleduje 5 udaju kazdy o delce 4 oktety, jako napriklad seriove cislo, viz RFC 1035
         for (uint8_t i = 0; i < 5; i++)
             this->AppendOctet(&rr_helper, 4, buffer, buffer_offset);
 
@@ -68,10 +72,12 @@ Record::Record(unsigned char buffer[1024], uint16_t *buffer_offset) {
     } else if (type_ == QuestionType::QTYPE_DS) {
         uint32_t rr_helper = 0;
 
+        // Zaznam zacina udaj o delce 2 oktety a pak 2 udaje po jednom oktetu
         this->AppendOctet(&rr_helper, 2, buffer, buffer_offset);
         this->AppendOctet(&rr_helper, 1, buffer, buffer_offset);
         this->AppendOctet(&rr_helper, 1, buffer, buffer_offset);
 
+        // Zpracovani hexadecimalniho klice (prvni argument je suma delky predchozich sekci)
         this->ParseHexKey(4, data_len - 1, buffer, buffer_offset);
 
         rdata_.insert(0, "\"");
@@ -79,6 +85,7 @@ Record::Record(unsigned char buffer[1024], uint16_t *buffer_offset) {
     } else if (type_ == QuestionType::QTYPE_RRSIG) {
         uint32_t rr_helper = 0;
 
+        // Opet zpracovani nekolika polozek pred samotnym podpisovatelem a podpisem, viz RFC 4034
         this->AppendOctet(&rr_helper, 2, buffer, buffer_offset);
         this->AppendOctet(&rr_helper, 1, buffer, buffer_offset);
         this->AppendOctet(&rr_helper, 1, buffer, buffer_offset);
@@ -87,13 +94,15 @@ Record::Record(unsigned char buffer[1024], uint16_t *buffer_offset) {
         this->AppendOctet(&rr_helper, 4, buffer, buffer_offset);
         this->AppendOctet(&rr_helper, 2, buffer, buffer_offset);
 
+        // Zpracovani podpisovatele
         int sig_name_len = *buffer_offset;
         this->ParseName(&rdata_, buffer, buffer_offset, data_len);
-
+        
         sig_name_len = *buffer_offset - sig_name_len;
         rdata_.append(" ");
         *buffer_offset -= 1;
 
+        // Zpracovani podpisu
         this->ParseHexKey(18 + sig_name_len, data_len, buffer, buffer_offset);
 
         rdata_.insert(0, "\"");
@@ -101,6 +110,7 @@ Record::Record(unsigned char buffer[1024], uint16_t *buffer_offset) {
     } else if (type_ == QTYPE_DNSKEY) {
         uint32_t rr_helper = 0;
 
+        // Obdobne jako u DS zaznamu, opet polozky o celkove delce 4 oktety a nasledne klic
         this->AppendOctet(&rr_helper, 2, buffer, buffer_offset);
         this->AppendOctet(&rr_helper, 1, buffer, buffer_offset);
         this->AppendOctet(&rr_helper, 1, buffer, buffer_offset);
@@ -187,6 +197,7 @@ Record::ParseName(std::string *data_holder, unsigned char buffer[1024], uint16_t
     } else if ((buffer[*buffer_offset] & 192) == 0) {
         pointer_helper = *buffer_offset;
 
+        // V pripade techto zaznamu se musi odsazeni bufferu dopocitat manualne        
         if (this->type_ != QTYPE_SOA && this->type_ != QTYPE_RRSIG)
             *buffer_offset += data_len;
     } else
@@ -235,16 +246,16 @@ void Record::ParseHexKey(uint16_t loop_from, uint16_t data_len, unsigned char bu
     }
 }
 
-void Record::AppendOctet(uint32_t *rr_helper, uint8_t octet_size, unsigned char buffer[1024], uint16_t *buffer_offset) {
+void Record::AppendOctet(uint32_t *rr_helper, uint8_t octet_count, unsigned char buffer[1024], uint16_t *buffer_offset) {
     *rr_helper = 0;
-    memcpy(rr_helper, buffer + *buffer_offset, octet_size);
+    memcpy(rr_helper, buffer + *buffer_offset, octet_count);
 
-    if (octet_size == 2)
+    if (octet_count == 2)
         *rr_helper = htons((uint16_t) *rr_helper);
-    else if (octet_size == 4)
+    else if (octet_count == 4)
         *rr_helper = htonl(*rr_helper);
 
     rdata_.append(std::to_string(*rr_helper));
     rdata_.append(" ");
-    *buffer_offset += octet_size;
+    *buffer_offset += octet_count;
 }

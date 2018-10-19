@@ -15,6 +15,7 @@
 #define UDP_HEADER_SIZE 8
 
 #define DEFAULT_CALC_TIME 60
+#define MAX_SYSLOG_MSG_LEN 1024
 
 using namespace std;
 
@@ -41,7 +42,7 @@ void PrintHelp(bool arg_error = false) {
          << endl;
 
     if (arg_error) {
-        cout << "ERROR (ARGUMENT): Chybny format vstupnich argumentu." << endl;
+        cout << "ERROR (ARGUMENT): Chybny format nebo kombinace vstupnich argumentu." << endl;
         exit(1);
     }
 
@@ -51,6 +52,7 @@ void PrintHelp(bool arg_error = false) {
 void PacketReceived(u_char *interface_name, const struct pcap_pkthdr *packet_header, const u_char *packet_buffer) {
     int mac_header_size = 14;
 
+    // Pokud neni specifikovan interface, velikost ramce se meni
     if (!strcmp((char *) interface_name, "any"))
         mac_header_size = 16;
 
@@ -58,6 +60,7 @@ void PacketReceived(u_char *interface_name, const struct pcap_pkthdr *packet_hea
     int protocolNumber = packet_buffer[mac_header_size + PROTOCOL_NUMBER_OFFSET];
     int dnsOffset = 0;
 
+    // Delky UDP a TCP paketu se lisi a tomu je treba prizpusobit kalkulaci pozice DNS casti
     if (protocolNumber == UDP_PROTOCOL_NUMBER)
         dnsOffset = mac_header_size + ipHeaderLength + UDP_HEADER_SIZE;
     else {
@@ -83,6 +86,10 @@ void PacketReceived(u_char *interface_name, const struct pcap_pkthdr *packet_hea
                 if (responses_.empty())
                     responses_.push_back(response.str());
                 else {
+                    /*
+                     * Pokud se jiz identicka odpoved vyskytuje v seznamu odpovedi, tak se odpovedi slouci
+                     * a inkrementuje se pole "count" na konci odpovedi
+                     */
                     bool found_match = false;
 
                     for (auto &prev_response : responses_) {
@@ -154,14 +161,17 @@ int main(int argc, char *argv[]) {
     }
 
     // Kontrola spravne kombinace vstupnich argumentu
-    if (!pcap_file_name.empty() && c_flag)
+    if ((!pcap_file_name.empty() && !interface_name.empty()) || (!pcap_file_name.empty() && c_flag))
         PrintHelp(true);
 
-    // Vypis pomoci k programu
-    else if (h_flag || (!pcap_file_name.empty() && !interface_name.empty()))
+    else if (h_flag)
         PrintHelp();
 
-    else if ((!pcap_file_name.empty() || !interface_name.empty()) && syslog_address.empty())
+    else if (pcap_file_name.empty() && interface_name.empty())
+        return 0;
+
+    // Pokud neni specifikovana adresa syslog, program vypise po zpracovani signalu export na STDOUT
+    else if (syslog_address.empty())
         signal(SIGUSR1, SignalCallback);
 
     char error_buffer[PCAP_ERRBUF_SIZE];
@@ -169,15 +179,18 @@ int main(int argc, char *argv[]) {
     bpf_u_int32 ip_address;
     pcap_t *handle;
 
+    // Zpracovava se bud soubor formatu pcap nebo se odchytava vsechen provoz na rozhrani
     if (interface_name.empty())
         handle = pcap_open_offline(pcap_file_name.c_str(), error_buffer);
     else
         handle = pcap_open_live(interface_name.c_str(), BUFSIZ, 1, 1000, error_buffer);
 
     try {
+        // Pro odposlech je potreba mit patricna opravneni
         if (handle == nullptr)
             throw runtime_error("Nepodarilo se otevrit zarizeni zadane zarizeni nebo soubor pro odposlech");
 
+        // Kompilace a nastaveni filtru
         if (pcap_compile(handle, &filter_exp, "port 53", 0, ip_address) == -1)
             throw runtime_error("Nepodarilo se zpracovat zadany filtr");
 
@@ -188,6 +201,7 @@ int main(int argc, char *argv[]) {
         return 2;
     }
 
+    // Nastaveni neblokujici komunikace, at lze program korektne ukoncit po uplynuti casu v pripade prace s rozhranim
     pcap_setnonblock(handle, 1, error_buffer);
 
     if (interface_name.empty())
@@ -197,55 +211,71 @@ int main(int argc, char *argv[]) {
             pcap_dispatch(handle, -1, PacketReceived, (u_char *) interface_name.c_str());
     }
 
-    if (syslog_address.empty()) {
-        SignalCallback(0);
-        return 0;
-    }
+    if (!syslog_address.empty()) {
+        int conn_socket = 0;
 
-    int conn_socket = 0;
+        try {
+            // Vytvoreni socketu pro komunikaci se syslog serverem
+            if ((conn_socket = socket(PF_INET, SOCK_STREAM, 0)) < 0)
+                throw runtime_error("Nepodarilo se vytvorit socket pro komunikaci");
 
-    try {
-        if ((conn_socket = socket(PF_INET, SOCK_STREAM, 0)) < 0)
-            throw runtime_error("Nepodarilo se vytvorit socket pro komunikaci");
+            sockaddr_in server_address_ipv4;
+            bzero(&server_address_ipv4, sizeof(server_address_ipv4));
+            server_address_ipv4.sin_family = AF_INET;
+            server_address_ipv4.sin_port = htons(514);
 
-        sockaddr_in server_address_ipv4;
-        bzero(&server_address_ipv4, sizeof(server_address_ipv4));
-        server_address_ipv4.sin_family = AF_INET;
-        server_address_ipv4.sin_port = htons(514);
-        
-        sockaddr_in6 server_address_ipv6;
-        bzero(&server_address_ipv6, sizeof(server_address_ipv6));
-        server_address_ipv6.sin6_family = AF_INET6;
-        server_address_ipv6.sin6_port = htons(514);
+            sockaddr_in6 server_address_ipv6;
 
-        // Prevod adresy z textove na binarni formu
-        if (inet_pton(AF_INET, syslog_address.c_str(), &(server_address_ipv4.sin_addr)) == 1) {
-            if (connect(conn_socket, (struct sockaddr *) &server_address_ipv4, sizeof(server_address_ipv4)) == -1)
-                throw runtime_error("Nepodarilo se pripojit k syslog serveru");
-        } else if (inet_pton(AF_INET6, syslog_address.c_str(), &(server_address_ipv6.sin6_addr)) == 1) {
-            if (connect(conn_socket, (struct sockaddr *) &server_address_ipv6, sizeof(server_address_ipv6)) == -1)
-                throw runtime_error("Nepodarilo se pripojit k syslog serveru");
-        } else {
-            hostent *addressFromHost = gethostbyname(syslog_address.c_str());
-
-            if (addressFromHost != nullptr) {
-                memcpy(&server_address_ipv4.sin_addr, addressFromHost->h_addr_list[0],
-                       (size_t) addressFromHost->h_length);
+            /*
+             * Prvne se pokousi prevest argument adressy na IPv4 format, pote na IPv6 a naposled se pokousi
+             * argument zpracovat jako hostname a ziskat z nej adresu.
+             */
+            if (inet_pton(AF_INET, syslog_address.c_str(), &(server_address_ipv4.sin_addr)) == 1) {
                 if (connect(conn_socket, (struct sockaddr *) &server_address_ipv4, sizeof(server_address_ipv4)) == -1)
                     throw runtime_error("Nepodarilo se pripojit k syslog serveru");
-            } else
-                throw invalid_argument("Zadana adresa syslog serveru neni platna");
-        }
+                else {
+                    bzero(&server_address_ipv6, sizeof(server_address_ipv6));
+                    server_address_ipv6.sin6_family = AF_INET6;
+                    server_address_ipv6.sin6_port = htons(514);
+                }
+            } else if (inet_pton(AF_INET6, syslog_address.c_str(), &(server_address_ipv6.sin6_addr)) == 1) {
+                if (connect(conn_socket, (struct sockaddr *) &server_address_ipv6, sizeof(server_address_ipv6)) == -1)
+                    throw runtime_error("Nepodarilo se pripojit k syslog serveru");
+            } else {
+                hostent *addressFromHost = gethostbyname(syslog_address.c_str());
 
-        for (auto &response : responses_)
-            write(conn_socket, response.data(), response.size());
-    } catch (runtime_error &e) {
-        cerr << "ERROR (RUNTIME): " << e.what() << endl;
-        return 2;
-    } catch (invalid_argument &e) {
-        cerr << "ERROR (ARGUMENT): " << e.what() << endl;
-        PrintHelp(true);
+                if (addressFromHost != nullptr) {
+                    memcpy(&server_address_ipv4.sin_addr, addressFromHost->h_addr_list[0],
+                           (size_t) addressFromHost->h_length);
+                    if (connect(conn_socket, (struct sockaddr *) &server_address_ipv4, sizeof(server_address_ipv4)) ==
+                        -1)
+                        throw runtime_error("Nepodarilo se pripojit k syslog serveru");
+                } else
+                    throw invalid_argument("Zadana adresa syslog serveru neni platna");
+            }
+
+            // Pokud je velikost nekolika po sobe jdoucich zprav mensi nez 1 kB, tak se zpravy slouci
+            for (int i = 0; i < responses_.size(); i++) {
+                while (i + 1 < responses_.size() && responses_[i].size() + responses_[i + 1].size() < MAX_SYSLOG_MSG_LEN) {
+                    responses_[i + 1].insert(0, responses_[i]);
+                    i++;
+                }
+
+                // Odeslani zpravy na syslog server
+                write(conn_socket, responses_[i].data(), responses_[i].size());
+            }
+        } catch (runtime_error &e) {
+            cerr << "ERROR (RUNTIME): " << e.what() << endl;
+            return 2;
+        } catch (invalid_argument &e) {
+            cerr << "ERROR (ARGUMENT): " << e.what() << endl;
+            PrintHelp(true);
+        }
     }
+
+    // Pokud je zadan pcap soubor a neni zadana syslog adresa, vypise se vystup na STDOUT
+    else if (!pcap_file_name.empty())
+        SignalCallback(0);
 
     return 0;
 }

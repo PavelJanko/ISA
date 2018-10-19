@@ -25,15 +25,9 @@ class Query {
         unsigned char buffer[1024];
         uint16_t buffer_offset_ = 0;
 
-        void ParseIPv4();
-        void ParseIPv6();
-        void TranslateHost();
-
     public:
         explicit Query(const u_char * packet_received);
-        Record GetFirstAdditional();
         Record GetAnswer(uint8_t id);
-        Record GetFirstAuthNS();
         unsigned long GetAnswerCount();
 };
 
