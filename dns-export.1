@@ -1,0 +1,27 @@
+.TH DNS-EXPORT 1
+.SH NAME
+dns\-export \- export information by sniffing DNS packets
+.SH SYNOPSIS
+.B dns\-export
+[\fB\-r\fR \fIfile.pcap\fR]
+[\fB\-i\fR \fIinterface\fR]
+[\fB\-s\fR \fIsyslog\-server\fR]
+[\fB\-t\fR \fIseconds\fR]
+.SH DESCRIPTION
+.B dns\-export
+exports information obtained from sniffing DNS packets to the STDOUT or the specified syslog server.
+.SH OPTIONS
+.TP
+.BR \-r =\fIfile.pcap\fR
+Sets the pcap file for offline sniffing of DNS packets.
+.TP
+.BR \-i =\fIinterface\fR
+Sets the interface from which the program will sniff DNS packets in real-time.
+Can use "any" for any interface.
+.TP
+.BR \-s =\fIsyslog\-server\fR
+Sets the hostname/IPv4/IPv6 address of the syslog server which will receive exported information.
+.TP
+.BR \-t =\fIseconds\fR
+Set the number of seconds between sending information.
+Default is sixty seconds.
