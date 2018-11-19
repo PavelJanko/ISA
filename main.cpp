@@ -12,7 +12,6 @@
 #define DESTINATION_IP_OFFSET 16
 #define UDP_PROTOCOL_NUMBER 17
 
-#define TCP_HEADER_SIZE_OFFSET 12
 #define UDP_HEADER_SIZE 8
 
 #define DEFAULT_CALC_TIME 60
@@ -29,7 +28,7 @@ string CutOutResponse(string response) {
 void SignalCallback(int sig_number) {
     if (sig_number == SIGUSR1) {
         for (auto &response : responses_)
-            cout << response;
+            cout << response.substr(response.find("- - - ") + 6, string::npos);
     }
 }
 
@@ -69,19 +68,18 @@ void PacketReceived(u_char *interface_name, const struct pcap_pkthdr *packet_hea
             local_ip.append(1, '.');
     }
 
-    int dnsOffset = 0;
+    int dns_offset = 0;
 
     // Delky UDP a TCP paketu se lisi a tomu je treba prizpusobit kalkulaci pozice DNS casti
     if (protocolNumber == UDP_PROTOCOL_NUMBER)
-        dnsOffset = mac_header_size + ipHeaderLength + UDP_HEADER_SIZE;
-    else {
-        int tcpHeaderLength =
-                ((packet_buffer[mac_header_size + ipHeaderLength + TCP_HEADER_SIZE_OFFSET] & 0xf0) >> 4) * 4;
-        dnsOffset = mac_header_size + ipHeaderLength + tcpHeaderLength;
-    }
+        dns_offset = mac_header_size + ipHeaderLength + UDP_HEADER_SIZE;
+
+    // Vzhledem k tomu, ze jsem neresil fragmentaci, jsem se rozhodl implementaci TCP preskocit
+    else
+        return;
 
     try {
-        Query query(&packet_buffer[dnsOffset]);
+        Query query(&packet_buffer[dns_offset]);
 
         if (query.GetAnswerCount() != 0) {
             // Zpracovani odpovedi
@@ -238,7 +236,7 @@ int main(int argc, char *argv[]) {
 
             try {
                 // Vytvoreni socketu pro komunikaci se syslog serverem
-                if ((conn_socket = socket(PF_INET, SOCK_STREAM, 0)) < 0)
+                if ((conn_socket = socket(PF_INET, SOCK_DGRAM, 0)) < 0)
                     throw runtime_error("Nepodarilo se vytvorit socket pro komunikaci");
 
                 sockaddr_in server_address_ipv4;
@@ -289,10 +287,10 @@ int main(int argc, char *argv[]) {
 
                     // Odeslani zpravy na syslog server
                     write(conn_socket, responses_[i].data(), responses_[i].size());
-
-                    if (!pcap_file_name.empty())
-                        break;
                 }
+
+                if (!pcap_file_name.empty())
+                    break;
             } catch (runtime_error &e) {
                 cerr << "ERROR (RUNTIME): " << e.what() << endl;
                 return 2;
